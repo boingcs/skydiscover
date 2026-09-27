@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "p=\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/hooks/clone_reuse_guard.py\"; [ -f \"$p\" ] && exec python3 \"$p\"; exit 0",
+            "command": "p=\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/hooks/clone_reuse_guard.py\"; py=\"$(command -v python3 || command -v python || true)\"; [ -f \"$p\" ] && [ -n \"$py\" ] && exec \"$py\" \"$p\"; exit 0",
             "timeout": 60
           }
         ]

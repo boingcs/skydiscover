@@ -8,7 +8,6 @@ finished run's suite in, test.sh included; record adds one entry. The index (tes
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import re
@@ -19,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .paths import TEST_SCRIPT, Domain, Run, test_files, test_id
+from .file_lock import exclusive_file_lock
 
 # A header line shorter than this, or a single word, is a tag or a file name, not a property statement.
 MIN_STATEMENT_LEN = 12
@@ -53,12 +53,9 @@ def _lock(domain: str):
     store, so concurrent writers never lose each other's rows."""
     store = _store(domain)
     store.tests.mkdir(parents=True, exist_ok=True)
-    with open(store.tests / ".index.lock", "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
+    with open(store.tests / ".index.lock", "a+b") as lf:
+        with exclusive_file_lock(lf):
             yield
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
 
 
 def _tokens(text: str) -> set:

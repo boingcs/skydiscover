@@ -16,6 +16,7 @@ after upgrading skydiscover. Wiring one agent leaves the others untouched.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -61,7 +62,18 @@ def _wire(agent: str, project: Path, no_hook: bool) -> None:
             f"skydiscover init cannot find the skill at {workflow.parent}; "
             "reinstall skydiscover, or run init from a source checkout"
         )
-    args = ["bash", str(installer), "--agent", agent]
+    if os.name == "nt" and agent == "codex":
+        _wire_windows_codex(project, workflow.parent, no_hook)
+        return
+    from skydiscover.synthesize.platform_support import bash_executable
+
+    args = [bash_executable()]
+    # A direct non-login Git Bash inherits PowerShell's PATH and may not expose
+    # its own core tools (`dirname`, `mkdir`, ...).  Login initialization adds
+    # Git for Windows' /usr/bin before the installer runs.
+    if os.name == "nt":
+        args.append("--login")
+    args.extend([str(installer), "--agent", agent])
     if no_hook:
         args.append("--no-hook")
     args.append(str(project))
@@ -78,6 +90,74 @@ def _wire(agent: str, project: Path, no_hook: bool) -> None:
             f"skydiscover init: the installer failed (exit {proc.returncode})"
             + (f":\n{detail}" if detail else "")
         )
+
+
+def _wire_windows_codex(project: Path, workflow: Path, no_hook: bool) -> None:
+    """Install the complete Codex workflow without Windows symbolic links."""
+
+    from skydiscover.synthesize.platform_support import bash_executable
+
+    skill = project / ".agents" / "skills" / "skysynth"
+    codex_dir = project / ".codex"
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    codex_dir.mkdir(parents=True, exist_ok=True)
+
+    if skill.is_symlink():
+        skill.unlink()
+    elif skill.exists() and not skill.is_dir():
+        backup = skill.with_name(skill.name + ".bak")
+        if backup.exists():
+            raise FileExistsError(f"cannot preserve {skill}: backup already exists at {backup}")
+        skill.replace(backup)
+    shutil.copytree(workflow, skill, dirs_exist_ok=True)
+
+    # Generate every Planner/DSA/ISA/Auditor/etc. role and merge only the
+    # generated section into an existing project config.
+    from skydiscover.synthesize.workflow.adapters.codex import agents
+
+    if agents.main([str(codex_dir), "--quiet"]):
+        raise RuntimeError("failed to generate Codex SkySynth roles")
+
+    if no_hook:
+        return
+
+    hook_manifest = workflow / "adapters" / "codex" / "hooks.json"
+    shipped = json.loads(hook_manifest.read_text(encoding="utf-8"))["hooks"]
+    hook_path = codex_dir / "hooks.json"
+    try:
+        current = json.loads(hook_path.read_text(encoding="utf-8"))
+        if not isinstance(current, dict):
+            current = {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        current = {}
+
+    bash = Path(bash_executable()).as_posix()
+    skill_posix = skill.as_posix()
+    for event, entries in shipped.items():
+        installed = current.setdefault("hooks", {}).setdefault(event, [])
+        for entry in entries:
+            copied = json.loads(json.dumps(entry))
+            for hook in copied.get("hooks", []):
+                command = str(hook.get("command", "")).replace(
+                    "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}", skill_posix
+                )
+                command = command.replace("exec bash", f'exec "{bash}" --login')
+                hook["command"] = command
+            marker = "delivery_check.sh" if event == "SubagentStop" else "clone_reuse_guard.py"
+            existing = next(
+                (
+                    candidate
+                    for candidate in installed
+                    if marker in json.dumps(candidate, ensure_ascii=False)
+                ),
+                None,
+            )
+            if existing is None:
+                installed.append(copied)
+            else:
+                existing.clear()
+                existing.update(copied)
+    hook_path.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 # Subcommands that own their own flag namespace. Everything after the verb is
@@ -180,8 +260,13 @@ def _run_init(args: argparse.Namespace) -> int:
         how = "open pi in this folder (trust it once) and run:"
 
     paint = _painter()
+    mark = "✓"
+    try:
+        mark.encode(sys.stdout.encoding or "utf-8")
+    except UnicodeEncodeError:
+        mark = "OK"
     print()
-    print(f"  {paint('32;1', '✓')}  {paint('1', f'skydiscover is ready in {where}')}")
+    print(f"  {paint('32;1', mark)}  {paint('1', f'skydiscover is ready in {where}')}")
     print(
         f"     {paint('2', 'build a system specialized for your workload, hardware, and requirements')}"
     )

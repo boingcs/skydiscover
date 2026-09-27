@@ -7,7 +7,6 @@ are atomic, and a file that does not parse raises rather than reading as empty.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -15,6 +14,8 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from .file_lock import exclusive_file_lock
 
 # kind -> where the fix belongs. Only "spec" reaches the spec.
 _TARGETS = {
@@ -127,12 +128,9 @@ class Findings:
         other's updates."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_name(f".{self.path.name}.lock")  # hidden, like tests/.index.lock
-        with open(lock_path, "w") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
-            try:
+        with open(lock_path, "a+b") as lf:
+            with exclusive_file_lock(lf):
                 yield
-            finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
 
     def all(self) -> list[Finding]:
         """Every finding on disk. An absent file is an empty store ([]). A file that is present but

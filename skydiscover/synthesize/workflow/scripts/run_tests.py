@@ -20,6 +20,7 @@ import argparse
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -102,38 +103,39 @@ def main(argv=None) -> int:
         ap.error("--check-defects needs --run")
     if args.production_ready and not args.run:
         ap.error("--production-ready needs --run")
-    if args.wall_secs > 0:
-        _stop_after(args.wall_secs)
+    cancel_timeout = _stop_after(args.wall_secs) if args.wall_secs > 0 else lambda: None
+    try:
+        run: Optional[Run] = None
+        if args.run:
+            run = Run(args.run)
+            # Tests that need the run's own tree (its frozen benchmark, its reference) find it through
+            # SKYDISCOVER_RUN; with --run the caller need not export it.
+            os.environ.setdefault("SKYDISCOVER_RUN", str(run.path.resolve()))
+            tests = Path(args.suite) if args.suite else run.tests
+            interface: Optional[Path] = Path(args.interface) if args.interface else run.interface
+            impl = _entry(run, args.impl, ap)
+        else:
+            if not (args.suite and args.impl):
+                ap.error("--run, or --suite with --impl")
+            tests, impl = Path(args.suite), Path(args.impl)
+            interface = Path(args.interface) if args.interface else None
 
-    run: Optional[Run] = None
-    if args.run:
-        run = Run(args.run)
-        # Tests that need the run's own tree (its frozen benchmark, its reference) find it through
-        # SKYDISCOVER_RUN; with --run the caller need not export it.
-        os.environ.setdefault("SKYDISCOVER_RUN", str(run.path.resolve()))
-        tests = Path(args.suite) if args.suite else run.tests
-        interface: Optional[Path] = Path(args.interface) if args.interface else run.interface
-        impl = _entry(run, args.impl, ap)
-    else:
-        if not (args.suite and args.impl):
-            ap.error("--run, or --suite with --impl")
-        tests, impl = Path(args.suite), Path(args.impl)
-        interface = Path(args.interface) if args.interface else None
-
-    rc = run_suite(tests, impl, interface, args.test)
-    if not rc and run is not None and args.check_defects:
-        rc = _defects(run, tests, impl, interface)
-    if rc or not args.production_ready:
-        return rc
-    assert run is not None
-    if not run.decision_log.exists():
-        print(f"RELEASE BLOCKED: no decision log at {run.decision_log}", file=sys.stderr)
-        return 2
-    # Both run, so one pass reports every blocker instead of one per attempt.
-    return max(
-        check_release.defects(run.decision_log, tests, impl, interface),
-        check_release.audit(_audited(run, args.impl), run.audit),
-    )
+        rc = run_suite(tests, impl, interface, args.test)
+        if not rc and run is not None and args.check_defects:
+            rc = _defects(run, tests, impl, interface)
+        if rc or not args.production_ready:
+            return rc
+        assert run is not None
+        if not run.decision_log.exists():
+            print(f"RELEASE BLOCKED: no decision log at {run.decision_log}", file=sys.stderr)
+            return 2
+        # Both run, so one pass reports every blocker instead of one per attempt.
+        return max(
+            check_release.defects(run.decision_log, tests, impl, interface),
+            check_release.audit(_audited(run, args.impl), run.audit),
+        )
+    finally:
+        cancel_timeout()
 
 
 def _defects(run: Run, tests: Path, impl: Path, interface: Optional[Path]) -> int:
@@ -142,7 +144,7 @@ def _defects(run: Run, tests: Path, impl: Path, interface: Optional[Path]) -> in
     return check_release.defects(run.decision_log, tests, impl, interface)
 
 
-def _stop_after(secs: int) -> None:
+def _stop_after(secs: int):
     """Exit 2 when the whole check outlives `secs`; the subprocess in flight is killed with it."""
 
     def expired(_signum, _frame):
@@ -153,8 +155,26 @@ def _stop_after(secs: int) -> None:
         )
         sys.exit(2)
 
-    signal.signal(signal.SIGALRM, expired)
-    signal.alarm(secs)
+    if hasattr(signal, "SIGALRM"):
+        signal.signal(signal.SIGALRM, expired)
+        signal.alarm(secs)
+        return lambda: signal.alarm(0)
+
+    # Windows has no SIGALRM.  Ask Python to deliver SIGINT on the main
+    # thread, where the temporary handler gives the same fail-closed exit 2.
+    previous = signal.signal(signal.SIGINT, expired)
+    # raise_signal delivers a real Windows SIGINT and interrupts blocking calls
+    # such as time.sleep/subprocess waits; interrupt_main only queues an
+    # exception until some blocking calls return.
+    timer = threading.Timer(secs, lambda: signal.raise_signal(signal.SIGINT))
+    timer.daemon = True
+    timer.start()
+
+    def cancel() -> None:
+        timer.cancel()
+        signal.signal(signal.SIGINT, previous)
+
+    return cancel
 
 
 def _audited(run: Run, impl: str) -> Path:

@@ -24,7 +24,16 @@ from typing import Dict, Optional, Sequence
 
 SCRIPTS = Path(__file__).resolve().parent
 SYNTHESIZE = SCRIPTS.parents[1]
-for _p in (SCRIPTS, SYNTHESIZE):  # these scripts run standalone: siblings and spec/ must import
+# A native Windows install copies workflow/ into .agents instead of creating a
+# symlink (Windows may deny symlinks).  From that copied location, locate the
+# source checkout that still owns spec/ and platform_support.py.
+for _parent in SCRIPTS.parents:
+    _candidate = _parent / "skydiscover" / "synthesize"
+    if (_candidate / "spec").is_dir():
+        SYNTHESIZE = _candidate
+        break
+for _p in (SCRIPTS, SYNTHESIZE, SYNTHESIZE.parent.parent):
+    # These scripts run standalone: siblings, spec/, and the package root must import.
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
@@ -41,6 +50,11 @@ except ModuleNotFoundError:
             "source checkout."
         )
     sys.modules["spec"] = spec
+
+try:
+    from platform_support import bash_executable
+except ModuleNotFoundError:
+    from skydiscover.synthesize.platform_support import bash_executable
 
 TEST_SCRIPT = "test.sh"
 
@@ -98,11 +112,23 @@ def run(
     run_env["SKYDISCOVER_IMPL"] = str(Path(impl).resolve())
     if interface is not None:
         run_env["SKYDISCOVER_INTERFACE"] = str(Path(interface).resolve())
+    # A source checkout is importable in this Python process because run_tests.py
+    # bootstraps sys.path, but the proof test is a child Python launched through
+    # Bash.  Preserve that source root for the child as well.  Installed-package
+    # runs simply receive one harmless additional search path.
+    source_root = str(SYNTHESIZE.parent.parent)
+    inherited_pythonpath = run_env.get("PYTHONPATH", "")
+    run_env["PYTHONPATH"] = source_root + (
+        os.pathsep + inherited_pythonpath if inherited_pythonpath else ""
+    )
     run_env.update(env or {})
     started = time.monotonic()
     try:
+        bash_command = [bash_executable()]
+        if os.name == "nt":
+            bash_command.append("--login")
         proc = subprocess.run(
-            ["bash", TEST_SCRIPT, *names],
+            [*bash_command, TEST_SCRIPT, *names],
             cwd=str(suite),
             env=run_env,
             capture_output=True,

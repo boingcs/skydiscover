@@ -13,6 +13,18 @@
 set -euo pipefail
 payload="$(cat || true)"
 
+python_cmd="${SKYDISCOVER_PYTHON:-}"
+if [ -z "$python_cmd" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    python_cmd=python3
+  elif command -v python >/dev/null 2>&1; then
+    python_cmd=python
+  else
+    echo "delivery check: Python 3 is not on PATH; refusing to deliver unchecked." >&2
+    exit 2
+  fi
+fi
+
 # Block on an UNEXPECTED abort. The non-blocking exit code is 1, which is also what set -e
 # uses for most failures, so any unhandled error once we know this is a checked delivery would tell
 # the harness "don't block" and let an UNCHECKED delivery complete. The trap converts every such abort
@@ -61,7 +73,7 @@ esac
 # <project>/<runs>/<run>/synthesis/impl (runs = $SKYDISCOVER_RUNS, else config.toml, else
 # .skydiscover), looking under the payload's cwd, then the project Claude Code reports, then the
 # current directory. Several candidates: the most recently modified.
-runs="${SKYDISCOVER_RUNS:-$(python3 -m skydiscover.synthesize.spec.paths runs 2>/dev/null || echo .skydiscover)}"
+runs="${SKYDISCOVER_RUNS:-$($python_cmd -m skydiscover.synthesize.spec.paths runs 2>/dev/null || echo .skydiscover)}"
 if [ -z "${SKYDISCOVER_RUN:-}" ]; then
   for base in "$payload_cwd" "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
     case "$runs" in /*) root="$runs" ;; *) root="$base/$runs" ;; esac
@@ -92,7 +104,7 @@ args=(--run "$SKYDISCOVER_RUN" --wall-secs "${SKYDISCOVER_DELIVERY_SECS:-3500}")
 # run_tests.py lives beside this hook (workflow/scripts/) and finds everything else from its own
 # location, so this works from a source checkout and from an installed plugin alike.
 scripts_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../scripts" && pwd)"
-if out="$(python3 "$scripts_dir/run_tests.py" "${args[@]}" 2>&1)"; then
+if out="$("$python_cmd" "$scripts_dir/run_tests.py" "${args[@]}" 2>&1)"; then
   if [ "$event" = "SubagentStop" ]; then
     # Codex reads JSON here; plain text is rejected.
     printf '%s' "$out" | jq -Rs '{systemMessage: .}'

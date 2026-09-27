@@ -19,6 +19,18 @@
 # which the lead invokes each cycle; only the clone-reuse guard is hook-wired.
 
 set -euo pipefail
+
+# Git for Windows ships Bash but commonly exposes the selected Python as
+# `python`, not `python3`.  Keep the rest of this POSIX installer unchanged by
+# providing a process-local compatibility function.
+if ! command -v python3 >/dev/null 2>&1; then
+  if command -v python >/dev/null 2>&1; then
+    python3() { command python "$@"; }
+  else
+    echo "install: Python 3 is required (neither python3 nor python is on PATH)" >&2
+    exit 1
+  fi
+fi
 scripts_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 here="$(cd "$scripts_dir/.." && pwd)"          # .../skydiscover/synthesize
 repo_root="$(cd "$here/../.." && pwd)"

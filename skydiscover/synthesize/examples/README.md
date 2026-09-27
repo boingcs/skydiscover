@@ -10,6 +10,7 @@ that workload out, with a notebook of a real run.
 | [`proved-dist-kvstore/`](proved-dist-kvstore/) | a distributed key-value store, proved read-your-writes | Rocq proof | Rocq |
 | [`llm-router/`](llm-router/) | a per-tenant LLM router | tests | any machine |
 | [`inference-engine/`](inference-engine/) | a prefix-sharing inference engine for Qwen3-4B | tests | NVIDIA L4 GPU |
+| [`verus-db-windows/`](verus-db-windows/) | a concurrent database proved against Verus atomic contracts through SkySynth IDS | Verus proof | Windows, Verus, Git Bash, Codex |
 
 Each README has the exact `/skysynth` prompt. `/skysynth build me <any system>` also works with
 nothing checked in: the agents write the specification and tests during the run.
